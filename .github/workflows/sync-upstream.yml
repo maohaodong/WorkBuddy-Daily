@@ -1,0 +1,61 @@
+name: Sync fork with upstream
+
+# 作用：把 L0NE-6/WorkBuddy-Daily 的 main 强制同步到本 fork，丢弃 fork 上的任何改动。
+# 唯一例外：本文件自身会被保留，否则同步一次后它就被 reset 删掉了。
+# 影响范围：只动 git 文件。Secrets / Variables / Environments 不在 git 里，不会被覆盖。
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 每天 02:00 UTC = 北京时间 10:00
+  workflow_dispatch:       # 支持在 Actions 页面手动点 Run workflow
+
+permissions:
+  contents: write          # 必需，否则 push 会 403
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/L0NE-6/WorkBuddy-Daily.git 2>/dev/null \
+            || git remote set-url upstream https://github.com/L0NE-6/WorkBuddy-Daily.git
+          git fetch upstream main --prune --force
+
+      - name: Check whether upstream moved
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游无新提交，跳过"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "上游新增提交："
+            git log --oneline HEAD..upstream/main | head -20
+          fi
+
+      - name: Hard reset to upstream, then keep this workflow
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -e
+          cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
+          git reset --hard upstream/main
+          mkdir -p .github/workflows
+          cp /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
+          git add .github/workflows/sync-upstream.yml
+          git commit -m "chore: keep fork sync workflow @ $(git rev-parse --short upstream/main)"
+          git push --force-with-lease origin main
+          echo "已同步到上游 $(git rev-parse --short upstream/main)"
